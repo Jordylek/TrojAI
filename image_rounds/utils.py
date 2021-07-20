@@ -9,7 +9,9 @@ from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 
 
-TRANSFORM_CENTERCROP = transforms.Compose([transforms.CenterCrop(224), transforms.ToTensor()])
+TRANSFORM_CENTERCROP = transforms.Compose([transforms.CenterCrop(size=224), transforms.ToTensor()])
+TRANSFORM_RANDOM_AUGMENT = transforms.Compose([transforms.RandomCrop(size=224, padding=4),
+                                               transforms.RandomHorizontalFlip(p=.5)])
 
 PATH_TO_TROJAI= '/scratch/data/TrojAI/'
 device = torch.device('cuda:2')
@@ -33,13 +35,15 @@ def string_list_to_array(s, dtype=np.uint8):
     return np.array(s.strip('][').split(' '), dtype=dtype)
 
 
-def pass_on_loader(model, loader, criterion, optimizer=None, optimize=False, device=device):
+def pass_on_loader(model, loader, criterion, optimizer=None, optimize=False, device=device, augment_transform=None):
     model.train() if optimize else model.eval()
     running_loss = 0.0
     good_preds = 0
     size = 0
     for i, data in enumerate(loader):
         inputs, labels = data
+        if augment_transform is not None:
+            inputs = augment_transform(inputs)
         if optimize:
             optimizer.zero_grad()
         inputs = inputs.to(device)
@@ -96,7 +100,9 @@ class ImageSet(Dataset):
             self.target_class = target_class
         self.from_end = from_end
         self.transform = transform
+        self.filenames = []
         self.load_images()
+       
 
     def load_images(self):
         self.x = []
@@ -118,6 +124,7 @@ class ImageSet(Dataset):
                 img = Image.open(os.path.join(self.path_to_data, filename))
                 torch_imgs.append(self.transform(img))
             self.x.extend(torch_imgs)
+            self.filenames.extend(imgs)
             if not self.poisoned:
                 self.y.extend([label] * self.size_per_class)
 
