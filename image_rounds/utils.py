@@ -63,7 +63,7 @@ def pass_on_loader(model, loader, criterion, optimizer=None, optimize=False, dev
 class ImageSet(Dataset):
 
     def __init__(self, model_id, round_number=2, original_dataset=False, size=None, size_per_class=None, poisoned=False, n_classes=None, classes=None, random_choice=False, target_class=None,
-                 from_end=False, transform=TRANSFORM_CENTERCROP, path_to_data=None):
+                 transform=TRANSFORM_CENTERCROP, path_to_data=None, skip_first_n=0):
         self.model_id = model_id
         self.poisoned = poisoned
         self.round= round_number
@@ -92,13 +92,13 @@ class ImageSet(Dataset):
             self.classes = classes
 
         self.size_per_class = size_per_class if size is None else int(np.ceil(size/self.n_classes))
+        self.skip_per_class = int(np.ceil(skip_first_n/self.n_classes))
         self.size = self.size_per_class * self.n_classes
         self.random_choice = random_choice
 
         if self.poisoned:
             assert target_class is not None
             self.target_class = target_class
-        self.from_end = from_end
         self.transform = transform
         self.filenames = []
         self.load_images()
@@ -116,8 +116,7 @@ class ImageSet(Dataset):
             if self.random_choice:
                 imgs = np.random.choice(imgs, size=self.size_per_class, replace=False)
             else:
-                imgs = imgs[:self.size_per_class] if not self.from_end else imgs[-self.size_per_class:]
-
+                imgs = imgs[self.skip_per_class:self.skip_per_class + self.size_per_class] 
             torch_imgs = []
 
             for filename in imgs:

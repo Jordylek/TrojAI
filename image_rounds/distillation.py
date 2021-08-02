@@ -100,7 +100,7 @@ def NAD_loss(student, teacher, loader, optimizer, beta, layers_of_interest, opti
 class NeuralDistillation:
 
     def __init__(self, model_id, train_size, test_size, path_to_save_folder, layers_of_interest, beta, round_number, p=2,
-                 attack_size=None, device=device, random_sample=False, batch_size=32, augmentation=False, augment_transform=TRANSFORM_RANDOM_AUGMENT):
+                 attack_size=None, device=device, random_sample=False, batch_size=128, augmentation=False, augment_transform=TRANSFORM_RANDOM_AUGMENT):
         self.model_id = model_id
 
         self.train_size = train_size
@@ -151,10 +151,10 @@ class NeuralDistillation:
 
     def get_dataset(self):
         self.train_set = ImageSet(model_id=self.model_id, round_number=self.round_number, size=self.train_size, poisoned=False,
-                                n_classes=self.n_classes, random_choice=self.random_sample, from_end=False)
+                                n_classes=self.n_classes, random_choice=self.random_sample, skip_first_n=0)
 
         self.test_set = ImageSet(model_id=self.model_id, round_number=self.round_number, size=self.test_size, poisoned=False,
-                                n_classes=self.n_classes, random_choice=self.random_sample, from_end=True)
+                                n_classes=self.n_classes, random_choice=self.random_sample, skip_first_n=self.train_size)
 
         self.train_size = len(self.train_set)
         self.test_size = len(self.test_set)
@@ -220,14 +220,29 @@ class NeuralDistillation:
         self.teacher = model
     
     def start_distillation(self, max_iter=100, verbose=True, lr=1e-4, weight_decay=1e-5, drop_accuracy=4,
-                           random_reinitialization=True, tol_rounds=5, gamma=.5, momentum=.9, step_size=5, **finetune_kwargs):
-        if random_reinitialization:
-            print('Reinitializing Weight, No fine tuning')
-            self.teacher = copy.deepcopy(self.student)
-            self.student.apply(weights_init)
-        else:
-            print('Fine Tuning, No Random Reinitialization')
+                           random_reinitialization=True, finetune_teacher=False, tol_rounds=5, gamma=.5, momentum=.9, step_size=5, **finetune_kwargs):
+        if finetune_teacher:
+            print(f'Finetuning to create Teacher')
             self.finetune(**finetune_kwargs)
+        else:
+            print(f'No Finetuning')
+            self.teacher = copy.deepcopy(self.student)
+
+        
+        if random_reinitialization:
+            print('Reinitializing Weights')
+            self.student.apply(weights_init)
+
+        
+        # if random_reinitialization:
+        #     print('Reinitializing Weight, No fine tuning')
+        #     self.teacher = copy.deepcopy(self.student)
+        #     self.student.apply(weights_init)
+        # else:
+        #     print('Fine Tuning, No Random Reinitialization')
+        #     self.finetune(**finetune_kwargs)
+
+        print('Starting Distillation')
         # optimizer = optim.Adam(self.student.parameters(), lr=lr, weight_decay=weight_decay)
         optimizer = optim.SGD(self.student.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=step_size, gamma=gamma)
@@ -238,8 +253,8 @@ class NeuralDistillation:
         nad_test_loss_per_epoch = []
         test_loss_per_epoch = []
         criterion = nn.CrossEntropyLoss()
-        original_student_loss, original_student_accuracy = NAD_loss(self.student, self.teacher, self.train_loader, optimizer,
-                                                                    self.beta, self.layers_of_interest, optimize=False, device=self.device, p=self.p)
+        original_student_loss, original_student_accuracy = NAD_loss(student=self.student, teacher=self.teacher, loader=self.test_loader, optimizer=optimizer,
+                                                                    beta=self.beta, layers_of_interest=self.layers_of_interest, optimize=False, device=self.device, p=self.p)
 
         # original_student_loss, original_student_accuracy = pass_on_loader(model=self.student, loader=self.test_loader, criterion=criterion, optimizer=optimizer, optimize=False, device=self.device)
         _, original_teacher_accuracy = pass_on_loader(model=self.teacher, loader=self.test_loader, criterion=criterion, optimizer=optimizer, optimize=False, device=self.device)
@@ -263,12 +278,12 @@ class NeuralDistillation:
         while True:
             if verbose:
                  print(f'{datetime.now():%Y/%m/%d-%H:%M:%S} iter: {it:2d} lr:{scheduler.get_last_lr()[-1]:1.2e}', end=' ')
-            train_loss, train_acc = NAD_loss(self.student, self.teacher, self.train_loader, optimizer, self.beta, self.layers_of_interest, optimize=True, device=self.device, p=self.p, augment_transform=self.augment_transform)
+            train_loss, train_acc = NAD_loss(student=self.student, teacher=self.teacher, loader=self.train_loader, optimizer=optimizer, beta=self.beta, layers_of_interest=self.layers_of_interest, optimize=True, device=self.device, p=self.p, augment_transform=self.augment_transform)
             
             scheduler.step()
             print(f'train_total_loss: {train_loss["total"]:1.3e} - train_acc: {train_acc:.2f}', end='\t----\t')
 
-            loss, accuracy = NAD_loss(self.student, self.teacher, self.train_loader, optimizer, self.beta, self.layers_of_interest, optimize=False, device=self.device, p=self.p)
+            loss, accuracy = NAD_loss(student=self.student, teacher=self.teacher, loader=self.test_loader, optimizer=optimizer, beta=self.beta, layers_of_interest=self.layers_of_interest, optimize=False, device=self.device, p=self.p)
             # loss, accuracy = pass_on_loader(model=self.student, loader=self.test_loader, criterion=criterion, optimizer=optimizer, optimize=False, device=self.device)
             accuracy_per_epoch.append(accuracy)
             cross_test_loss_per_epoch.append(loss['cross'])
@@ -321,11 +336,10 @@ class NeuralDistillation:
 
 if __name__ == '__main__':
     train_size = 4000
-    test_size = 1000
-    attack_size = 1000
-    path_to_folder = '/scratch/jordan.lekeufack/image_models/test'
-
-    parser = argparse.ArgumentParser(description='Prune them')
+    test_size =  1000
+    attack_size =  1000
+    path_to_folder = '/scratch/jordan.lekeufack/image_models/distillation/test'
+    parser = argparse.ArgumentParser(description='Distillation arguments')
     parser.add_argument('--model_id', type=str, 
                         help='model_id', 
                         default='id-00000084')
@@ -340,7 +354,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--device', type=int,
                         help='Cuda number',
-                        default=2)   
+                        default=6)   
 
     parser.add_argument('--beta', type=float,
                         help='Beta',
@@ -369,28 +383,4 @@ if __name__ == '__main__':
     print(f'Train size: {train_size}, Test size: {test_size}, Attack size: {attack_size}, layers_of_interest: {layers_of_interest}')
     print(f'beta: {beta}, max_iter: {max_iter}, p: {p}, lr: {lr}, weight_decay: {weight_decay}')
     
-    output = neural_distillation.start_distillation(max_iter=max_iter, lr=lr, weight_decay=weight_decay, random_reinitialization=True, tol_rounds=100, step_size=3)
-
-    # train_size = 4000
-    # test_size = 1000
-    # attack_size = 1000
-    # path_to_folder = '/scratch/jordan.lekeufack/image_models/tests/'
-
-    # model_id = 'id-00000025'
-    # device = torch.device(f'cuda:2')
-    # layers_of_interest = ['BasicBlock']
-    # augmentation = True
-    # round_number = 2
-    # beta = 0
-    # p = 2
-    # max_iter = 70
-    # finetune_lr = 1e-4
-    # lr = 1e-3
-    # weight_decay = 1e-4
-    # batch_size = 32 # 128
-    # neural_distillation = NeuralDistillation(model_id=model_id, train_size=train_size, test_size=test_size, attack_size=attack_size, path_to_save_folder=path_to_folder,
-    #                                         layers_of_interest=layers_of_interest, beta=beta, p=p, round_number=round_number, device=device, augmentation=augmentation, batch_size=batch_size)
-
-    # neural_distillation.finetune(finetune_lr=.4, finetune_weight_decay=5e-4, early_stopping=False, gamma=.5)
-    # output = neural_distillation.start_distillation(max_iter=max_iter, lr=lr, weight_decay=weight_decay, random_reinitialization=True, tol_rounds=100, step_size=3)
-    # print(output)
+    output = neural_distillation.start_distillation(max_iter=max_iter, lr=lr, weight_decay=weight_decay, random_reinitialization=True, finetune_teacher=False, tol_rounds=100, step_size=3)

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 
 import argparse
 import copy
-from utils import get_path_to_round, get_metadata, load_image_model, string_list_to_array, device, ImageSet, pass_on_loader
+from utils import TRANSFORM_RANDOM_AUGMENT, get_path_to_round, get_metadata, load_image_model, string_list_to_array, device, ImageSet, pass_on_loader
 from collections import OrderedDict
 
 device = torch.device('cuda:2')
@@ -75,7 +75,8 @@ def corresponding_activations(activations, all_modules, by='relu'):
 
 class FinePrune:
 
-    def __init__(self, model_id, round_number, train_size, test_size, attack_size, path_to_folder, device=device, random_sample=True, batch_size=32):
+    def __init__(self, model_id, round_number, train_size, test_size, attack_size, path_to_folder, device=device, random_sample=False, batch_size=128,
+                    augmentation=False, augment_transform=TRANSFORM_RANDOM_AUGMENT):
         self.path_to_folder = path_to_folder
         if not os.path.exists(self.path_to_folder):
             os.makedirs(self.path_to_folder)
@@ -94,6 +95,8 @@ class FinePrune:
         self.test_size = test_size
         self.attack_size = attack_size # Size of the set used to compute attack rate
         self.batch_size = batch_size
+        self.augmentation = augmentation
+        self.augment_transform = augment_transform if self.augmentation else None
 
         self.metadata = get_metadata(round_number=self.round_number).loc[model_id]
 
@@ -117,10 +120,10 @@ class FinePrune:
 
     def generate_dataset(self):
         self.train_set = ImageSet(model_id=self.model_id, round_number=self.round_number, size=self.train_size, poisoned=False,
-                                n_classes=self.n_classes, random_choice=self.random_sample, from_end=False)
+                                n_classes=self.n_classes, random_choice=self.random_sample, skip_first_n=0)
 
         self.test_set = ImageSet(model_id=self.model_id, round_number=self.round_number, size=self.test_size, poisoned=False,
-                                n_classes=self.n_classes, random_choice=self.random_sample, from_end=True)
+                                n_classes=self.n_classes, random_choice=self.random_sample, skip_first_n=self.train_size)
 
         self.train_size = len(self.train_set)
         self.test_size = len(self.test_set)
@@ -144,8 +147,8 @@ class FinePrune:
         for epoch in range(n_epochs):
             if verbose:
                 print(f'[{epoch+1}/{n_epochs}]', end=' ')
-            self.pass_on_loader(loader=train_loader, optimize=True)
-            val_loss, val_acc = self.pass_on_loader(loader=test_loader, optimize=False)
+            self.pass_on_loader(loader=train_loader, optimize=True, augment=True)
+            val_loss, val_acc = self.pass_on_loader(loader=test_loader, optimize=False, augment=False)
             if early_stopping:
                 if val_loss <= best_loss :
                     early_stop_rounds = 0
@@ -163,8 +166,9 @@ class FinePrune:
             self.model.load_state_dict(checkpoint)
         return best_acc
 
-    def pass_on_loader(self, loader, optimize=False):
-        loss, acc = pass_on_loader(model=self.model, loader=loader, criterion=self.criterion, optimizer=self.optimizer, device=self.device, optimize=optimize)
+    def pass_on_loader(self, loader, optimize=False, augment=False):
+        augment_transform = self.augment_transform if augment else None
+        loss, acc = pass_on_loader(model=self.model, loader=loader, criterion=self.criterion, optimizer=self.optimizer, device=self.device, optimize=optimize, augment_transform=augment_transform)
         return loss, acc
 
     def launch_pruning(self, drop_accuracy=4, lr=1e-4, verbose=True, max_iter=20,
@@ -188,9 +192,9 @@ class FinePrune:
 
         checkpoint = copy.deepcopy(self.model.state_dict())
         # Computing Initial Accuracy and ASR
-        _, accuracy = self.pass_on_loader(loader=self.test_loader, optimize=False)
+        _, accuracy = self.pass_on_loader(loader=self.test_loader, optimize=False, augment=False)
         if self.poisoned:
-            _, attack = self.pass_on_loader(loader=self.attack_loader, optimize=False)
+            _, attack = self.pass_on_loader(loader=self.attack_loader, optimize=False, augment=False)
         if verbose:
             print(f'Initial values : Accuracy: {accuracy:.2f}', end=' ')
             if self.poisoned:
@@ -220,7 +224,7 @@ class FinePrune:
                     hooks.append(module.register_forward_hook(get_activation(name, activations)))
 
             # Passing throught the set 
-            self.pass_on_loader(loader=self.train_loader, optimize=False)
+            self.pass_on_loader(loader=self.train_loader, optimize=False, augment=True)
 
             for handle in hooks:
                 handle.remove()
@@ -259,9 +263,9 @@ class FinePrune:
                               verbose=verbose, early_stopping=early_stopping)
 
             prune_rate = 100 * (1 - neurons_left / number_neurons)
-            _, accuracy = self.pass_on_loader(loader=self.test_loader, optimize=False)
+            _, accuracy = self.pass_on_loader(loader=self.test_loader, optimize=False, augment=False)
             if self.poisoned:
-                _, attack = self.pass_on_loader(loader=self.attack_loader, optimize=False)
+                _, attack = self.pass_on_loader(loader=self.attack_loader, optimize=False, augment=False)
                 attack_per_epoch.append(attack)
             accuracy_per_epoch.append(accuracy)
             
@@ -302,7 +306,7 @@ class FinePrune:
         return output
 
 if __name__ == '__main__':
-    train_size = 2000
+    train_size = 4000
     test_size = 1000
     attack_size = 1000
     drop_accuracy = 4
@@ -312,8 +316,8 @@ if __name__ == '__main__':
     eps_decrease_rate = 0.5
     eps_stop_rate=0.05
     max_iter = 50
-    batch_size = 32
-    random_sample = True # Random selection of examples
+    batch_size = 128
+    random_sample = False # Random selection of examples
 
     # Fine-tuning parameters
     lr = 1e-4
@@ -323,9 +327,10 @@ if __name__ == '__main__':
     n_epochs_finetune = 10
     n_early_stopping = 3
     verbose = True
+    augmentation = True
     path_to_folder = '/scratch/jordan.lekeufack/image_models/tests'
 
-    parser = argparse.ArgumentParser(description='Prune them')
+    parser = argparse.ArgumentParser(description='Finepruning parameters')
     parser.add_argument('--model_id', type=str, 
                         help='model_id', 
                         default='id-00000025')
@@ -355,7 +360,7 @@ if __name__ == '__main__':
         os.makedirs(path_to_folder)
 
     pruning = FinePrune(model_id=model_id, round_number=round_number, train_size=train_size, test_size=test_size, attack_size=attack_size,
-                        path_to_folder=path_to_folder, device=device, random_sample=random_sample, batch_size=batch_size)
+                        path_to_folder=path_to_folder, device=device, random_sample=random_sample, batch_size=batch_size, augmentation=augmentation)
     model_architecture = pruning.model_architecture
     trigger_type = pruning.trigger_name if pruning.poisoned else 'None'
     retrain = True
