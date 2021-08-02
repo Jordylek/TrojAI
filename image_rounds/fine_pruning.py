@@ -294,8 +294,11 @@ class FinePrune:
         self.model.load_state_dict(checkpoint)
         # Removing the hooks
         for name, module in self.model.named_modules():
-            module._forward_hooks = OrderedDict()
-            module._foward_pre_hooks = OrderedDict()
+            if module.__class__.__name__ == 'Conv2d':
+                prune.remove(module, 'weight')
+                if module.bias is not None:
+                    prune.remove(module, 'bias')
+
         torch.save(self.model, self.path_to_save)
         if not self.poisoned:
             attack_per_epoch = []
@@ -333,7 +336,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Finepruning parameters')
     parser.add_argument('--model_id', type=str, 
                         help='model_id', 
-                        default='id-00000025')
+                        default='id-00000082')
 
     parser.add_argument('--round_number', type=int, 
                         help='Round', 
@@ -349,7 +352,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--device', type=int,
                         help='Cuda number',
-                        default=2)   
+                        default=5)   
     args = parser.parse_args()
 
     path_to_folder = args.path_to_folder
