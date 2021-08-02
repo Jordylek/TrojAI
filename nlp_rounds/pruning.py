@@ -19,37 +19,6 @@ import random
 
 device = torch.device('cuda:2')
 
-class TextDatasetSimple(Dataset):
-    def __init__(self, data_per_label):
-        self.x, self.y = [], []
-        for label in data_per_label:
-            self.x = self.x + data_per_label[label]
-            self.y = self.y + [label] *len(data_per_label[label])
-    
-    def __getitem__(self, index):
-        return self.x[index], self.y[index]
-    
-    def __len__(self):
-        return len(self.y)
-
-
-def load_text_examples_per_label(dataset_name, n_sample=None, random_sample=False):
-    file = open(f'{path_to_text}/{dataset_name}/train.json')
-
-    data = json.load(file)
-    file.close()
-
-    n_sample = len(data) if n_sample is None else n_sample
-    train_data = [(val['data'], val['label']) for val in data.values() if val['data'] is not None and len(val['data']) > 10] # At least 10 characters
-    if random_sample:
-        random.shuffle(train_data)
-    labels = set([x[1] for x in train_data])
-    data_per_label = {label : [x[0] for x in train_data if x[1]==label] for label in labels}
-
-    n_per_label = n_sample // len(labels)
-
-    return {label: x[:n_per_label] for label, x in data_per_label.items()}
-
 
 class PruningNeuronsInLinear(prune.BasePruningMethod):
     """
@@ -77,23 +46,24 @@ def get_activation(name, activations=None):
 
 class Pruning:
 
-    def __init__(self, model_id, n_train, n_test, path_to_folder, device=device):
+    def __init__(self, model_id, n_train, n_test, path_to_folder, round_number=6, device=device):
+        self.metadata = get_metadata(round_number=round_number).loc[model_id]
         self.model_id = model_id
         self.n_train = n_train
         self.n_test = n_test
         self.device = torch.device(device)
         self.classifier, self.examples = load_classifier(model_id, device=self.device, load_clean_examples=True, load_poisoned_examples=True)
-        self.language_model = METADATA.loc[model_id, 'embedding']
-        self.cls_token_is_first = METADATA.loc[model_id, 'cls_token_is_first']
+        self.language_model = self.metadata['embedding']
+        self.cls_token_is_first = self.metadata['cls_token_is_first']
         self.tokenizer, self.embedding = load_language_model(self.language_model, device=self.device)
-        self.dataset_name = METADATA.loc[model_id, 'source_dataset']
-        self.training_lr = METADATA.loc[model_id, 'learning_rate']
+        self.dataset_name = self.metadata['source_dataset']
+        self.training_lr = self.metadata['learning_rate']
         self.path_to_save = f'{path_to_folder}/{model_id}.pt'
         if not os.path.isdir(f'{path_to_folder}/checkpoints/'):
             os.makedirs(f'{path_to_folder}/checkpoints/')
         self.path_to_checkpoint = f'{path_to_folder}/checkpoints/{model_id}.pt'
-        self.poisoned = METADATA.loc[model_id, 'poisoned']
-        self.model_type = METADATA.loc[model_id, 'model_architecture']
+        self.poisoned = self.metadata['poisoned']
+        self.model_type = self.metadata['model_architecture']
     
     def load_data_text(self, batch_size):
         self.data_per_label = load_text_examples_per_label(self.dataset_name, n_sample=self.n_train + self.n_test,
